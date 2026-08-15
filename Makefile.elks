@@ -1,0 +1,22 @@
+BASEDIR=$(TOPDIR)/elkscmd
+
+include $(BASEDIR)/Makefile-rules
+
+CLBASE = -mcmodel=medium -melks-libc -mtune=i8086 -Wall -Os
+CLBASE += -msegment-relocation-stuff
+CLBASE += -fno-inline -fno-builtin-printf -fno-builtin-fprintf
+
+LOCALFLAGS = -DNO_GRAPHICS -DDEBUG
+
+PRGS = 8086tiny
+
+all: $(PRGS)
+
+8086tiny: 8086tiny.o
+	$(LD) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+install: $(PRGS)
+	$(INSTALL) $(PRGS) $(DESTDIR)/bin
+
+clean:
+	$(RM) $(PRGS) *.o

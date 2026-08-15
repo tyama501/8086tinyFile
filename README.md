@@ -1,3 +1,16 @@
+This is the fork repository for porting to 16-bit 8086 real mode (ELKS / gcc-ia16)
+
+Still experimental
+
+ELKS (Embeddable Linux Kernel Subset) is the OS work on the systems with the IA16 architecture. 
+https://github.com/ghaerr/elks
+
+File access is used instead of allocating 1MB memory.
+
+Only NO_GRAPHICS is the target for now. 
+
+The following text is the original README of 8086tiny.
+
 8086tiny
 ========
 

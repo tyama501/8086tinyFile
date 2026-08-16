@@ -119,7 +119,9 @@ unsigned short memfr(unsigned long addr, int wa)
 	{
 		int lo = getc(mfp);
 		int hi = getc(mfp);
+#ifdef DEBUG
 		printf("addr %lx, lo %d, hi %d\n", addr, lo, hi);
+#endif
 		return (unsigned short)((lo & 0xFF) | ((hi & 0xFF) << 8));
 	}
 	return (unsigned short)(getc(mfp) & 0xFF);
@@ -205,8 +207,7 @@ void mem_write_block(unsigned long addr, unsigned char *buf, unsigned short len)
 
 #define R_M_OP_D_S(dest,op,src,daddr,saddr) (dest = memfr(daddr, i_w), src = memfr(saddr, i_w), \
 						R_M_OP(dest,op,src), \
-						memfw(daddr, dest, i_w), \
-						memfw(saddr, src, i_w))
+						memfw(daddr, dest, i_w))
 
 #define MEM_OP(daddr,op,saddr) R_M_OP_D_S(dest_w,op,src_w,daddr,saddr)
 #define OP(op) MEM_OP(op_to_addr,op,op_from_addr)
@@ -573,7 +574,7 @@ int main(int argc, char **argv)
 						OP(=-);
 						op_dest = 0;
 						set_opcode(0x28); // Decode like SUB
-						set_CF(op_result > (long)op_dest)
+						set_CF(op_result > op_dest)
 					OPCODE 4: // MUL
 						i_w ? MUL_MACRO(unsigned short, regs16) : MUL_MACRO(unsigned char, regs8)
 					OPCODE 5: // IMUL
@@ -600,7 +601,7 @@ int main(int argc, char **argv)
 				{
 					OPCODE_CHAIN 0: // ADD
 						OP(+=),
-						set_CF(op_result < (long)op_dest)
+						set_CF(op_result < op_dest)
 					OPCODE 1: // OR
 						OP(|=)
 					OPCODE 2: // ADC
@@ -611,12 +612,12 @@ int main(int argc, char **argv)
 						OP(&=)
 					OPCODE 5: // SUB
 						OP(-=),
-						set_CF(op_result > (long)op_dest)
+						set_CF(op_result > op_dest)
 					OPCODE 6: // XOR
 						OP(^=)
 					OPCODE 7: // CMP
 						OP(-),
-						set_CF(op_result > (long)op_dest)
+						set_CF(op_result > op_dest)
 					OPCODE 8: // MOV
 						OP(=);
 				}
@@ -750,7 +751,7 @@ int main(int argc, char **argv)
 					}
 
 					set_flags_type = FLAGS_UPDATE_SZP | FLAGS_UPDATE_AO_ARITH; // Funge to set SZP/AO flags
-					set_CF(op_result > (long)op_dest);
+					set_CF(op_result > op_dest);
 				}
 			OPCODE 19: // RET|RETF|IRET
 				i_d = i_w;

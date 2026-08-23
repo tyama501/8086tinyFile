@@ -1,0 +1,6 @@
+*~
+*.o
+8086tiny
+file1mb.img
+LOG*
+test*

@@ -393,6 +393,9 @@ int main(int argc, char **argv)
 	unsigned long list_off_addr;
 	unsigned short table_off;
 	unsigned long linear_ip;
+#ifndef _WIN32
+	int stdin_fl = -1;
+#endif
 
 #ifndef NO_GRAPHICS
 	// Initialise SDL
@@ -406,11 +409,9 @@ int main(int argc, char **argv)
 
 #ifndef _WIN32
 	/* do not block the CPU loop on stdin */
-	{
-		int fl = fcntl(0, F_GETFL, 0);
-		if (fl >= 0)
-			fcntl(0, F_SETFL, fl | O_NONBLOCK);
-	}
+	stdin_fl = fcntl(0, F_GETFL, 0);
+	if (stdin_fl >= 0)
+		fcntl(0, F_SETFL, stdin_fl | O_NONBLOCK);
 #endif
 
 	// Open (or create) guest memory backing file (~1MB+)
@@ -1015,5 +1016,9 @@ int main(int argc, char **argv)
 	SDL_Quit();
 #endif
 	close(mfd);
+#ifndef _WIN32
+	if (stdin_fl >= 0)
+		fcntl(0, F_SETFL, stdin_fl);
+#endif
 	return 0;
 }

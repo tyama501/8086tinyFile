@@ -6,7 +6,9 @@ CLBASE = -mcmodel=medium -melks-libc -mtune=i8086 -Wall -Os
 CLBASE += -msegment-relocation-stuff
 CLBASE += -fno-inline -fno-builtin-printf -fno-builtin-fprintf
 
-LOCALFLAGS = -DNO_GRAPHICS -DDEBUG
+#LOCALFLAGS = -DNO_GRAPHICS -DDEBUG
+#LOCALFLAGS = -DNO_GRAPHICS -DDEBUG_DISK -DDEBUG_TRACE
+LOCALFLAGS = -DNO_GRAPHICS
 
 PRGS = 8086tiny
 

@@ -101,7 +101,7 @@
 // Guest memory file and local register mirror:
 // dest_w/src_w: operand scratch
 // Local mem[] mirrors guest [REGS_BASE, REGS_BASE+REGS_AREA_SIZE)
-FILE *mfp;
+int mfd;
 unsigned char mem[REGS_AREA_SIZE];
 unsigned char mem_opcode[6];
 unsigned char xfer_buf[XFER_BUF_SIZE];
@@ -109,27 +109,33 @@ unsigned char xfer_buf[XFER_BUF_SIZE];
 // Read guest memory (regs area is local; everything else is file-backed)
 unsigned short memfr(unsigned long addr, int wa)
 {
+	unsigned char buf[2];
+
 	if (addr >= REGS_BASE && addr < REGS_BASE + REGS_AREA_SIZE)
 	{
 		addr -= REGS_BASE;
 		return (unsigned short)(wa ? mem[addr] | ((unsigned short)mem[addr + 1] << 8) : mem[addr]);
 	}
-	fseek(mfp, (long)addr, SEEK_SET);
-	if (wa)
-	{
-		int lo = getc(mfp);
-		int hi = getc(mfp);
+	if (lseek(mfd, (long)addr, SEEK_SET) < 0)
+		return 0;
+	if (wa) {
+		if (read(mfd, buf, 2) != 2)
+			return 0;
 #ifdef DEBUG
-		printf("addr %lx, lo %d, hi %d\n", addr, lo, hi);
+		printf("addr %lx, lo %d, hi %d\n", addr, buf[0], buf[1]);
 #endif
-		return (unsigned short)((lo & 0xFF) | ((hi & 0xFF) << 8));
+		return (unsigned short)(buf[0] | ((unsigned short)buf[1] << 8));
 	}
-	return (unsigned short)(getc(mfp) & 0xFF);
+	if (read(mfd, buf, 1) != 1)
+		return 0;
+	return buf[0];
 }
 
 // Write guest memory
 int memfw(unsigned long addr, unsigned short dat, int wa)
 {
+	unsigned char buf[2];
+
 	if (addr >= REGS_BASE && addr < REGS_BASE + REGS_AREA_SIZE)
 	{
 		addr -= REGS_BASE;
@@ -138,10 +144,12 @@ int memfw(unsigned long addr, unsigned short dat, int wa)
 			mem[addr + 1] = (unsigned char)(dat >> 8);
 		return 0;
 	}
-	fseek(mfp, (long)addr, SEEK_SET);
-	putc((int)(dat & 0xFF), mfp);
-	if (wa)
-		putc((int)(dat >> 8), mfp);
+	buf[0] = (unsigned char)dat;
+	buf[1] = (unsigned char)(dat >> 8);
+	if (lseek(mfd, (long)addr, SEEK_SET) < 0)
+		return -1;
+	if (write(mfd, buf, wa ? 2 : 1) != (wa ? 2 : 1))
+		return -1;
 	return 0;
 }
 
@@ -234,7 +242,7 @@ void mem_write_block(unsigned long addr, unsigned char *buf, unsigned short len)
 #ifdef _WIN32
 #define KEYBOARD_DRIVER kbhit() && (memfw(0x4A6, getch(), 0), pc_interrupt(7))
 #else
-#define KEYBOARD_DRIVER read(0, xfer_buf, 1) && (memfw(0x4A6, xfer_buf[0], 0), int8_asap = (xfer_buf[0] == 0x1B), pc_interrupt(7))
+#define KEYBOARD_DRIVER (read(0, xfer_buf, 1) == 1) && (memfw(0x4A6, xfer_buf[0], 0), int8_asap = (xfer_buf[0] == 0x1B), pc_interrupt(7))
 #endif
 
 // Keyboard driver for SDL
@@ -246,7 +254,7 @@ void mem_write_block(unsigned long addr, unsigned char *buf, unsigned short len)
 
 // Global variable definitions
 unsigned char io_ports[IO_PORT_COUNT], *opcode_stream, *regs8, i_rm, i_w, i_reg, i_mod, i_mod_size, i_d, i_reg4bit, raw_opcode_id, xlat_opcode_id, extra, rep_mode, seg_override_en, rep_override_en, trap_flag, int8_asap, scratch_uchar, io_hi_lo, spkr_en, bios_table_lookup[20][256];
-unsigned short *regs16, reg_ip, seg_override, file_index, wave_counter, dest_w, src_w;
+unsigned short *regs16, reg_ip, seg_override, file_index, wave_counter, dest_w, src_w, last_cs;
 unsigned long op_source, op_dest, rm_addr, op_to_addr, op_from_addr, i_data0, i_data1, i_data2, scratch_uint, scratch2_uint, inst_counter, set_flags_type, GRAPHICS_X, GRAPHICS_Y, pixel_colors[16], vmem_ctr;
 long op_result, scratch_int;
 int disk[3];
@@ -318,6 +326,10 @@ void set_opcode(unsigned char opcode)
 // Execute INT #interrupt_num on the emulated machine
 char pc_interrupt(unsigned char interrupt_num)
 {
+#ifdef DEBUG_TRACE
+	printf("INT %02x from %04x:%04x\n", interrupt_num, regs16[REG_CS], reg_ip);
+	fflush(stdout);
+#endif
 	set_opcode(0xCD); // Decode like INT
 
 	make_flags();
@@ -392,20 +404,29 @@ int main(int argc, char **argv)
 	SDL_OpenAudio(&sdl_audio, 0);
 #endif
 
-	// Open (or create) guest memory backing file (~1MB+)
-	mfp = fopen("file1MB.img", "rb+");
-	if (mfp == NULL)
+#ifndef _WIN32
+	/* do not block the CPU loop on stdin */
 	{
-		mfp = fopen("file1MB.img", "wb+");
-		if (mfp == NULL)
+		int fl = fcntl(0, F_GETFL, 0);
+		if (fl >= 0)
+			fcntl(0, F_SETFL, fl | O_NONBLOCK);
+	}
+#endif
+
+	// Open (or create) guest memory backing file (~1MB+)
+	mfd = open("file1mb.img", O_RDWR);
+	if (mfd < 0)
+	{
+		unsigned char z = 0;
+		printf("Creating guest memory 1MB file\n");
+		mfd = open("file1mb.img", O_RDWR | O_CREAT, 0644);
+		if (mfd < 0)
 			return -1;
-		// Size the file to cover the guest address space
-		if (fseek(mfp, (long)GUEST_RAM_SIZE - 1, SEEK_SET) != 0 || putc(0, mfp) == EOF)
+		if (lseek(mfd, (long)GUEST_RAM_SIZE - 1, SEEK_SET) < 0 || write(mfd, &z, 1) != 1)
 		{
-			fclose(mfp);
+			close(mfd);
 			return -1;
 		}
-		fflush(mfp);
 	}
 
 	// regs16 and reg8 point to the local mirror of F000:0. CS is initialised to F000
@@ -440,14 +461,17 @@ int main(int argc, char **argv)
 
 	// Load BIOS image into F000:0100, and set IP to 0100
 	lseek(disk[2], 0, SEEK_SET);
+	lseek(mfd, (long)0xF0100UL, SEEK_SET);
 	for (unsigned long off = 0; off < 0xFF00UL; off++)
 	{
 		unsigned char b;
 		if (read(disk[2], &b, 1) != 1)
 			break;
-		memfw(0xF0100UL + off, b, 0);
+		if (write(mfd, &b, 1) != 1)
+			break;
 		printf("Load BIOS %ld\r", off);
 	}
+	printf("\n");
 	reg_ip = 0x100;
 
 	// Load instruction decoding helper tables from BIOS (offsets at F000:0102 == regs16[0x81..])
@@ -858,6 +882,10 @@ int main(int argc, char **argv)
 				switch ((char)i_data0)
 				{
 					OPCODE_CHAIN 0: // PUTCHAR_AL
+#ifdef DEBUG_TRACE
+						printf("CHAR %02x\n", regs8[REG_AL]);
+						fflush(stdout);
+#endif
 						write(1, regs8, 1)
 					OPCODE 1: // GET_RTC
 						time(&clock_buf);
@@ -870,15 +898,38 @@ int main(int argc, char **argv)
 						}
 					OPCODE 2: // DISK_READ
 					OPCODE_CHAIN 3: // DISK_WRITE
-						regs8[REG_AL] = ~lseek(disk[regs8[REG_DL]], (long)((unsigned long)regs16[REG_BP] << 9), SEEK_SET)
-							? (unsigned char)disk_xfer((char)i_data0 == 3, disk[regs8[REG_DL]], SEGREG(REG_ES, REG_BX,), regs16[REG_AX])
-							: 0;
+						{
+							unsigned long daddr = SEGREG(REG_ES, REG_BX,);
+							unsigned short nbytes = regs16[REG_AX];
+							unsigned short sector = regs16[REG_BP];
+							int do_wr = ((char)i_data0 == 3);
+							int dsk = disk[regs8[REG_DL]];
+							unsigned short got = ~lseek(dsk, (long)((unsigned long)sector << 9), SEEK_SET)
+								? disk_xfer(do_wr, dsk, daddr, nbytes)
+								: 0;
+							regs8[REG_AL] = (unsigned char)got;
+#ifdef DEBUG_DISK
+							printf("DISK %s dl=%x fd=%d sec=%u bytes=%u dest=0x%lx al=%u\n",
+								do_wr ? "WR" : "RD", regs8[REG_DL], dsk,
+								sector, nbytes, daddr, got);
+							fflush(stdout);
+#endif
+						}
 				}
 		}
 
 		// Increment instruction pointer by computed instruction length. Tables in the BIOS binary
 		// help us here.
 		reg_ip += (i_mod*(i_mod != 3) + 2*(!i_mod && i_rm == 6))*i_mod_size + bios_table_lookup[TABLE_BASE_INST_SIZE][raw_opcode_id] + bios_table_lookup[TABLE_I_W_SIZE][raw_opcode_id]*(i_w + 1);
+
+#ifdef DEBUG_TRACE
+		if (regs16[REG_CS] != last_cs) {
+			printf("CS %04x -> %04x:%04x op=%02x xlat=%u\n",
+				last_cs, regs16[REG_CS], reg_ip, raw_opcode_id, xlat_opcode_id);
+			last_cs = regs16[REG_CS];
+			fflush(stdout);
+		}
+#endif
 
 		// If instruction needs to update SF, ZF and PF, set them as appropriate
 		if (set_flags_type & FLAGS_UPDATE_SZP)
@@ -895,8 +946,18 @@ int main(int argc, char **argv)
 		}
 
 		// Poll timer/keyboard every KEYBOARD_TIMER_UPDATE_DELAY instructions
-		if (!(++inst_counter % KEYBOARD_TIMER_UPDATE_DELAY))
+		if (!(++inst_counter % KEYBOARD_TIMER_UPDATE_DELAY)) {
 			int8_asap = 1;
+#ifdef DEBUG_TRACE
+			printf("CPU n=%lu CS=%04x IP=%04x AX=%04x BX=%04x CX=%04x DX=%04x SI=%04x DI=%04x SP=%04x DS=%04x ES=%04x SS=%04x IF=%u\n",
+				inst_counter, regs16[REG_CS], reg_ip,
+				regs16[REG_AX], regs16[REG_BX], regs16[REG_CX], regs16[REG_DX],
+				regs16[REG_SI], regs16[REG_DI], regs16[REG_SP],
+				regs16[REG_DS], regs16[REG_ES], regs16[REG_SS],
+				regs8[FLAG_IF]);
+			fflush(stdout);
+#endif
+		}
 
 #ifndef NO_GRAPHICS
 		// Update the video graphics display every GRAPHICS_UPDATE_DELAY instructions
@@ -953,6 +1014,6 @@ int main(int argc, char **argv)
 #ifndef NO_GRAPHICS
 	SDL_Quit();
 #endif
-	fclose(mfp);
+	close(mfd);
 	return 0;
 }

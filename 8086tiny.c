@@ -194,6 +194,24 @@ int memfw(unsigned long addr, unsigned short dat, int wa)
 // Copy len bytes from guest address into host buffer
 void mem_read_block(unsigned long addr, unsigned char *buf, unsigned short len)
 {
+	int n;
+
+	if (len && (addr >= REGS_BASE + REGS_AREA_SIZE ||
+	    addr + (unsigned long)len <= REGS_BASE))
+	{
+		mem_cache_valid = 0;
+		if (lseek(mfd, (long)addr, SEEK_SET) < 0)
+		{
+			memset(buf, 0, len);
+			return;
+		}
+		n = read(mfd, buf, len);
+		if (n < 0)
+			n = 0;
+		if ((unsigned short)n < len)
+			memset(buf + n, 0, (unsigned)(len - n));
+		return;
+	}
 	for (unsigned short i = 0; i < len; i++)
 		buf[i] = (unsigned char)memfr(addr + i, 0);
 }
@@ -201,6 +219,15 @@ void mem_read_block(unsigned long addr, unsigned char *buf, unsigned short len)
 // Copy len bytes from host buffer into guest address
 void mem_write_block(unsigned long addr, unsigned char *buf, unsigned short len)
 {
+	if (len && (addr >= REGS_BASE + REGS_AREA_SIZE ||
+	    addr + (unsigned long)len <= REGS_BASE))
+	{
+		mem_cache_valid = 0;
+		if (lseek(mfd, (long)addr, SEEK_SET) < 0)
+			return;
+		write(mfd, buf, len);
+		return;
+	}
 	for (unsigned short i = 0; i < len; i++)
 		memfw(addr + i, buf[i], 0);
 }

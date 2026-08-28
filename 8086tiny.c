@@ -8,7 +8,7 @@
 // 2026 Takahiro Yamada / port to 16-bit 8086 real mode (ELKS / gcc-ia16)
 // Co-author: Grok Build
 // - Guest 1MB address space is file-backed (file1MB.img), not a host array
-// - Host buffer for guest data is small (registers + scratch + xfer <= 4KB)
+// - Host buffer for guest data is small
 // - int is 16-bit on target: use long/unsigned long for 32-bit values and linear addresses
 // - Build with -DNO_GRAPHICS (SDL path left intact but unused)
 
@@ -31,8 +31,10 @@
 #define GUEST_RAM_SIZE 0x10FFF0UL
 #define REGS_BASE 0xF0000UL
 #define REGS_AREA_SIZE 0x40
-#define XFER_BUF_SIZE 0x200
+#define XFER_BUF_SIZE 0x2000
 #define VIDEO_RAM_SIZE 0x10000
+// Guest RAM file cache
+#define MEM_CACHE_SIZE 0x200
 
 // Graphics/timer/keyboard update delays (explained later)
 #ifndef GRAPHICS_UPDATE_DELAY
@@ -105,33 +107,61 @@ int mfd;
 unsigned char mem[REGS_AREA_SIZE];
 unsigned char mem_opcode[6];
 unsigned char xfer_buf[XFER_BUF_SIZE];
+unsigned char mem_cache[MEM_CACHE_SIZE];
+unsigned long mem_cache_base;
+int mem_cache_valid = 0;
 
-// Read guest memory (regs area is local; everything else is file-backed)
+// Load MEM_CACHE_SIZE bytes from the file, starting at the miss address.
+static void mem_cache_fill(unsigned long addr)
+{
+	int n;
+
+	mem_cache_base = addr;
+	mem_cache_valid = 1;
+	if (lseek(mfd, (long)mem_cache_base, SEEK_SET) < 0)
+	{
+		memset(mem_cache, 0, MEM_CACHE_SIZE);
+		return;
+	}
+	n = read(mfd, mem_cache, MEM_CACHE_SIZE);
+	if (n < MEM_CACHE_SIZE)
+	{
+		if (n < 0)
+			n = 0;
+		memset(mem_cache + n, 0, (unsigned)(MEM_CACHE_SIZE - n));
+	}
+}
+
+#define MEM_CACHE_TOUCH(a) do { \
+	if (!mem_cache_valid || (a) < mem_cache_base || \
+	    (a) >= mem_cache_base + (unsigned long)MEM_CACHE_SIZE) \
+		mem_cache_fill(a); \
+} while (0)
+
+// Read guest memory (regs area is local; everything else is file-backed + cache)
 unsigned short memfr(unsigned long addr, int wa)
 {
-	unsigned char buf[2];
+	unsigned char lo, hi;
 
 	if (addr >= REGS_BASE && addr < REGS_BASE + REGS_AREA_SIZE)
 	{
 		addr -= REGS_BASE;
 		return (unsigned short)(wa ? mem[addr] | ((unsigned short)mem[addr + 1] << 8) : mem[addr]);
 	}
-	if (lseek(mfd, (long)addr, SEEK_SET) < 0)
-		return 0;
-	if (wa) {
-		if (read(mfd, buf, 2) != 2)
-			return 0;
+
+	MEM_CACHE_TOUCH(addr);
+	lo = mem_cache[(unsigned short)(addr - mem_cache_base)];
+	if (!wa)
+		return lo;
+	MEM_CACHE_TOUCH(addr + 1);
+	hi = mem_cache[(unsigned short)(addr + 1 - mem_cache_base)];
 #ifdef DEBUG
-		printf("addr %lx, lo %d, hi %d\n", addr, buf[0], buf[1]);
+	printf("addr %lx, lo %d, hi %d\n", addr, lo, hi);
 #endif
-		return (unsigned short)(buf[0] | ((unsigned short)buf[1] << 8));
-	}
-	if (read(mfd, buf, 1) != 1)
-		return 0;
-	return buf[0];
+	return (unsigned short)(lo | ((unsigned short)hi << 8));
 }
 
-// Write guest memory
+// Write guest memory (write-through: cache and file)
 int memfw(unsigned long addr, unsigned short dat, int wa)
 {
 	unsigned char buf[2];
@@ -144,8 +174,16 @@ int memfw(unsigned long addr, unsigned short dat, int wa)
 			mem[addr + 1] = (unsigned char)(dat >> 8);
 		return 0;
 	}
+
 	buf[0] = (unsigned char)dat;
 	buf[1] = (unsigned char)(dat >> 8);
+	MEM_CACHE_TOUCH(addr);
+	mem_cache[(unsigned short)(addr - mem_cache_base)] = buf[0];
+	if (wa)
+	{
+		MEM_CACHE_TOUCH(addr + 1);
+		mem_cache[(unsigned short)(addr + 1 - mem_cache_base)] = buf[1];
+	}
 	if (lseek(mfd, (long)addr, SEEK_SET) < 0)
 		return -1;
 	if (write(mfd, buf, wa ? 2 : 1) != (wa ? 2 : 1))
@@ -473,6 +511,7 @@ int main(int argc, char **argv)
 		printf("Load BIOS %ld\r", off);
 	}
 	printf("\n");
+	mem_cache_valid = 0;
 	reg_ip = 0x100;
 
 	// Load instruction decoding helper tables from BIOS (offsets at F000:0102 == regs16[0x81..])

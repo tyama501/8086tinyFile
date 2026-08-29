@@ -458,6 +458,7 @@ int main(int argc, char **argv)
 	unsigned long list_off_addr;
 	unsigned short table_off;
 	unsigned long linear_ip;
+	unsigned short kbd_timer_ctr = KEYBOARD_TIMER_UPDATE_DELAY;
 #ifndef _WIN32
 	int stdin_fl = -1;
 #endif
@@ -1013,11 +1014,12 @@ int main(int argc, char **argv)
 		}
 
 		// Poll timer/keyboard every KEYBOARD_TIMER_UPDATE_DELAY instructions
-		if (!(++inst_counter % KEYBOARD_TIMER_UPDATE_DELAY)) {
+		if (!--kbd_timer_ctr) {
+			kbd_timer_ctr = KEYBOARD_TIMER_UPDATE_DELAY;
 			int8_asap = 1;
 #ifdef DEBUG_TRACE
-			printf("CPU n=%lu CS=%04x IP=%04x AX=%04x BX=%04x CX=%04x DX=%04x SI=%04x DI=%04x SP=%04x DS=%04x ES=%04x SS=%04x IF=%u\n",
-				inst_counter, regs16[REG_CS], reg_ip,
+			printf("CPU CS=%04x IP=%04x AX=%04x BX=%04x CX=%04x DX=%04x SI=%04x DI=%04x SP=%04x DS=%04x ES=%04x SS=%04x IF=%u\n",
+				regs16[REG_CS], reg_ip,
 				regs16[REG_AX], regs16[REG_BX], regs16[REG_CX], regs16[REG_DX],
 				regs16[REG_SI], regs16[REG_DI], regs16[REG_SP],
 				regs16[REG_DS], regs16[REG_ES], regs16[REG_SS],
@@ -1028,7 +1030,7 @@ int main(int argc, char **argv)
 
 #ifndef NO_GRAPHICS
 		// Update the video graphics display every GRAPHICS_UPDATE_DELAY instructions
-		if (!(inst_counter % GRAPHICS_UPDATE_DELAY))
+		if (!(++inst_counter % GRAPHICS_UPDATE_DELAY))
 		{
 			// Video card in graphics mode?
 			if (io_ports[0x3B8] & 2)
